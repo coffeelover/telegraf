@@ -2,6 +2,8 @@ package openldap
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -12,26 +14,38 @@ import (
 )
 
 type Openldap struct {
-	Host               string
-	Port               int
-	SSL                string `toml:"ssl"` // Deprecated in 1.7; use TLS
-	TLS                string `toml:"tls"`
-	InsecureSkipVerify bool
-	SSLCA              string `toml:"ssl_ca"` // Deprecated in 1.7; use TLSCA
-	TLSCA              string `toml:"tls_ca"`
-	BindDn             string
-	BindPassword       string
-	ReverseMetricNames bool
+	Host string // Deprecated; use URI
+	Port int    // Deprecated; use URI
+	SSL  string `toml:"ssl"` // Deprecated in 1.7; use TLS
+	TLS  string `toml:"tls"`
+	tls.ClientConfig
+	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
+	URI                string `toml:"uri"`
+	BindDn             string `toml:"bind_dn"`
+	BindPassword       string `toml:"bind_password"`
+	ReverseMetricNames bool   `toml:"reverse_metric_names"`
 }
 
 const sampleConfig string = `
-  host = "localhost"
-  port = 389
+  ## LDAP url used for connection
+  ## format: uri = "<scheme>://><hostname>:<port>
+  ## scheme: either ldapi, ldaps, ldap
+  ##         default is ldapi
+  ## hostname: ip address or hostname for tcp connection (ldap, ldaps)
+               path for ldapi (or '/' for compile default)
+               (no need to escape path separators)
+  ## port: optional (default is 389 for ldap, 636 for ldaps)
+  ## example: uri = ldapi:///
+  ##          uri = ldapi://run/slapd/ldapi
+  ##          uri = ldap://ldap.example.com
+  ##          uri = ldaps://ldap.example.com
+  ##          uri = ldaps://ldap.example.com:8636
+  uri = "ldapi:///"
 
-  # ldaps, starttls, or no encryption. default is an empty string, disabling all encryption.
-  # note that port will likely need to be changed to 636 for ldaps
-  # valid options: "" | "starttls" | "ldaps"
-  tls = ""
+  # use starttls on ldap port (only valid for ldap scheme)
+  # either true/starttls or false
+  # default: false
+  tls = false
 
   # skip peer certificate verification. Default is false.
   insecure_skip_verify = false
@@ -40,6 +54,7 @@ const sampleConfig string = `
   tls_ca = "/etc/ssl/certs.pem"
 
   # dn/password to bind with. If bind_dn is empty, an anonymous bind is performed.
+  # when using ldapi schema, external bind is done automatically.
   bind_dn = ""
   bind_password = ""
 
@@ -72,83 +87,127 @@ func (o *Openldap) Description() string {
 	return "OpenLDAP cn=Monitor plugin"
 }
 
-// return an initialized Openldap
-func NewOpenldap() *Openldap {
-	return &Openldap{
-		Host:               "localhost",
-		Port:               389,
-		SSL:                "",
-		TLS:                "",
-		InsecureSkipVerify: false,
-		SSLCA:              "",
-		TLSCA:              "",
-		BindDn:             "",
-		BindPassword:       "",
-		ReverseMetricNames: false,
-	}
-}
-
 // gather metrics
 func (o *Openldap) Gather(acc telegraf.Accumulator) error {
-	if o.TLS == "" {
-		o.TLS = o.SSL
-	}
-	if o.TLSCA == "" {
-		o.TLSCA = o.SSLCA
-	}
-
 	var err error
 	var l *ldap.Conn
-	if o.TLS != "" {
-		// build tls config
-		clientTLSConfig := tls.ClientConfig{
-			TLSCA:              o.TLSCA,
-			InsecureSkipVerify: o.InsecureSkipVerify,
-		}
-		tlsConfig, err := clientTLSConfig.TLSConfig()
-		if err != nil {
-			acc.AddError(err)
+
+	if o.Host != "" {
+		scheme := "ldap"
+		if o.URI != "" {
+			acc.AddError(fmt.Errorf("Both uri and host are specified in config, cannot continue!"))
 			return nil
 		}
-		if o.TLS == "ldaps" {
-			l, err = ldap.DialTLS("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port), tlsConfig)
-			if err != nil {
-				acc.AddError(err)
+
+		if o.SSL != "" {
+			if o.TLS != "" {
+				acc.AddError(fmt.Errorf("Both TLS and SSL are specified in config, cannot continue!"))
 				return nil
+			} else {
+				o.TLS = o.SSL
 			}
-		} else if o.TLS == "starttls" {
-			l, err = ldap.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
-			if err != nil {
-				acc.AddError(err)
-				return nil
-			}
-			err = l.StartTLS(tlsConfig)
-			if err != nil {
-				acc.AddError(err)
-				return nil
-			}
-		} else {
-			acc.AddError(fmt.Errorf("Invalid setting for ssl: %s", o.TLS))
-			return nil
 		}
-	} else {
-		l, err = ldap.Dial("tcp", fmt.Sprintf("%s:%d", o.Host, o.Port))
+		if o.TLS != "" {
+			switch o.TLS {
+			case "yes",
+				"true",
+				"on",
+				"ssl":
+				scheme = "ldaps"
+			}
+		}
+		if o.Port == 0 {
+			if scheme == "ldap" {
+				o.Port, err = strconv.Atoi(ldap.DefaultLdapPort)
+			} else {
+				o.Port, err = strconv.Atoi(ldap.DefaultLdapsPort)
+			}
+		}
+		o.URI = fmt.Sprintf("%s://%s:%d", scheme, o.Host, o.Port)
 	}
 
+	u, err := url.Parse(o.URI)
 	if err != nil {
 		acc.AddError(err)
 		return nil
 	}
-	defer l.Close()
 
-	// username/password bind
-	if o.BindDn != "" && o.BindPassword != "" {
-		err = l.Bind(o.BindDn, o.BindPassword)
+	tlsCfg, err := o.ClientConfig.TLSConfig()
+	if err != nil {
+		acc.AddError(err)
+		return nil
+	}
+
+	switch u.Scheme {
+	case "ldapi":
+		l, err = ldap.Dial("unix", u.Path)
 		if err != nil {
 			acc.AddError(err)
 			return nil
 		}
+		err = l.ExternalBind()
+		if err != nil {
+			acc.AddError(err)
+			return nil
+		}
+	case "ldaps":
+		host, port, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			// we asume that error is due to missing port
+			host = u.Host
+			port = ldap.DefaultLdapsPort
+		}
+
+		l, err = ldap.DialTLS("tcp", net.JoinHostPort(host, port), tlsCfg)
+		if err != nil {
+			acc.AddError(err)
+			return nil
+		}
+		if o.BindDn != "" && o.BindPassword != "" {
+			err = l.Bind(o.BindDn, o.BindPassword)
+			if err != nil {
+				acc.AddError(err)
+				return nil
+			}
+		}
+	case "ldap":
+		start_tls := false
+		l, err = ldap.DialURL(o.URI)
+		if err != nil {
+			acc.AddError(err)
+			return nil
+		}
+		// Check for STARTTLS
+		if o.SSL != "" {
+			o.TLS = o.SSL
+		}
+
+		switch o.TLS {
+		case
+			"yes",
+			"true",
+			"on",
+			"ssl",
+			"starttls":
+			start_tls = true
+		}
+		if start_tls {
+			err = l.StartTLS(tlsCfg)
+			if err != nil {
+				acc.AddError(err)
+				return nil
+			}
+		}
+		if o.BindDn != "" && o.BindPassword != "" {
+			err = l.Bind(o.BindDn, o.BindPassword)
+			if err != nil {
+				acc.AddError(err)
+				return nil
+			}
+		}
 	}
+
+	defer l.Close()
 
 	searchRequest := ldap.NewSearchRequest(
 		searchBase,
@@ -173,11 +232,15 @@ func (o *Openldap) Gather(acc telegraf.Accumulator) error {
 	return nil
 }
 
-func gatherSearchResult(sr *ldap.SearchResult, o *Openldap, acc telegraf.Accumulator) {
+func gatherSearchResult(sr *ldap.SearchResult, o *Openldap, acc telegraf.Accumulator) error {
 	fields := map[string]interface{}{}
+	u, err := url.Parse(o.URI)
+	if err != nil {
+		return fmt.Errorf("Unable to parse LDAP uri '%s'", o.URI)
+	}
 	tags := map[string]string{
-		"server": o.Host,
-		"port":   strconv.Itoa(o.Port),
+		"server": u.Hostname(),
+		"port":   u.Port(),
 	}
 	for _, entry := range sr.Entries {
 		metricName := dnToMetric(entry.DN, o)
@@ -190,7 +253,7 @@ func gatherSearchResult(sr *ldap.SearchResult, o *Openldap, acc telegraf.Accumul
 		}
 	}
 	acc.AddFields("openldap", fields, tags)
-	return
+	return nil
 }
 
 // Convert a DN to metric name, eg cn=Read,cn=Waiters,cn=Monitor becomes waiters_read
@@ -220,5 +283,7 @@ func dnToMetric(dn string, o *Openldap) string {
 }
 
 func init() {
-	inputs.Add("openldap", func() telegraf.Input { return NewOpenldap() })
+	inputs.Add("openldap", func() telegraf.Input {
+		return &Openldap{}
+	})
 }
