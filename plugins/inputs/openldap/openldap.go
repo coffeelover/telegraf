@@ -18,12 +18,11 @@ type Openldap struct {
 	Port int    // Deprecated; use URI
 	SSL  string `toml:"ssl"` // Deprecated in 1.7; use TLS
 	TLS  string `toml:"tls"`
-	tls.ClientConfig
-	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 	URI                string `toml:"uri"`
 	BindDn             string `toml:"bind_dn"`
 	BindPassword       string `toml:"bind_password"`
 	ReverseMetricNames bool   `toml:"reverse_metric_names"`
+	tls.ClientConfig
 }
 
 const sampleConfig string = `
