@@ -14,10 +14,10 @@ import (
 )
 
 type Openldap struct {
-	Host string // Deprecated; use URI
-	Port int    // Deprecated; use URI
-	SSL  string `toml:"ssl"` // Deprecated in 1.7; use TLS
-	TLS  string `toml:"tls"`
+	Host               string // Deprecated; use URI
+	Port               int    // Deprecated; use URI
+	SSL                string `toml:"ssl"` // Deprecated in 1.7; use TLS
+	TLS                string `toml:"tls"`
 	URI                string `toml:"uri"`
 	BindDn             string `toml:"bind_dn"`
 	BindPassword       string `toml:"bind_password"`
@@ -84,6 +84,13 @@ func (o *Openldap) SampleConfig() string {
 
 func (o *Openldap) Description() string {
 	return "OpenLDAP cn=Monitor plugin"
+}
+
+// return an initialized Openldap
+func NewOpenldap() *Openldap {
+	return &Openldap{
+		URI: "ldap://localhost",
+	}
 }
 
 // gather metrics

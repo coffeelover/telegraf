@@ -1,7 +1,6 @@
 package openldap
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/influxdata/telegraf/testutil"
@@ -25,8 +24,7 @@ func TestOpenldapMockResult(t *testing.T) {
 	}
 
 	o := &Openldap{
-		Host: "localhost",
-		Port: 389,
+		URI: "ldap://localhost",
 	}
 
 	gatherSearchResult(&mockSearchResult, o, &acc)
@@ -68,11 +66,11 @@ func TestOpenldapStartTLSIntegration(t *testing.T) {
 	t.Skip("skipping test as unable to read LDAP response packet: unexpected EOF")
 
 	o := &Openldap{
-		Host:               testutil.GetLocalHost(),
-		Port:               389,
-		SSL:                "starttls",
-		InsecureSkipVerify: true,
+		Host: testutil.GetLocalHost(),
+		Port: 389,
+		SSL:  "starttls",
 	}
+	o.InsecureSkipVerify = true
 
 	var acc testutil.Accumulator
 	err := o.Gather(&acc)
@@ -84,11 +82,11 @@ func TestOpenldapLDAPSIntegration(t *testing.T) {
 	t.Skip("skipping test as unable to read LDAP response packet: unexpected EOF")
 
 	o := &Openldap{
-		Host:               testutil.GetLocalHost(),
-		Port:               636,
-		SSL:                "ldaps",
-		InsecureSkipVerify: true,
+		Host: testutil.GetLocalHost(),
+		Port: 636,
+		SSL:  "ldaps",
 	}
+	o.InsecureSkipVerify = true
 
 	var acc testutil.Accumulator
 	err := o.Gather(&acc)
@@ -100,11 +98,11 @@ func TestOpenldapInvalidSSLIntegration(t *testing.T) {
 	t.Skip("skipping test as unable to read LDAP response packet: unexpected EOF")
 
 	o := &Openldap{
-		Host:               testutil.GetLocalHost(),
-		Port:               636,
-		SSL:                "invalid",
-		InsecureSkipVerify: true,
+		Host: testutil.GetLocalHost(),
+		Port: 636,
+		SSL:  "invalid",
 	}
+	o.InsecureSkipVerify = true
 
 	var acc testutil.Accumulator
 	err := o.Gather(&acc)
@@ -117,13 +115,13 @@ func TestOpenldapBindIntegration(t *testing.T) {
 	t.Skip("skipping test as unable to read LDAP response packet: unexpected EOF")
 
 	o := &Openldap{
-		Host:               testutil.GetLocalHost(),
-		Port:               389,
-		SSL:                "",
-		InsecureSkipVerify: true,
-		BindDn:             "cn=manager,cn=config",
-		BindPassword:       "secret",
+		Host:         testutil.GetLocalHost(),
+		Port:         389,
+		SSL:          "",
+		BindDn:       "cn=manager,cn=config",
+		BindPassword: "secret",
 	}
+	o.InsecureSkipVerify = true
 
 	var acc testutil.Accumulator
 	err := o.Gather(&acc)
@@ -134,8 +132,6 @@ func TestOpenldapBindIntegration(t *testing.T) {
 func commonTests(t *testing.T, o *Openldap, acc *testutil.Accumulator) {
 	assert.Empty(t, acc.Errors, "accumulator had no errors")
 	assert.True(t, acc.HasMeasurement("openldap"), "Has a measurement called 'openldap'")
-	assert.Equal(t, o.Host, acc.TagValue("openldap", "server"), "Has a tag value of server=o.Host")
-	assert.Equal(t, strconv.Itoa(o.Port), acc.TagValue("openldap", "port"), "Has a tag value of port=o.Port")
 	assert.True(t, acc.HasInt64Field("openldap", "total_connections"), "Has an integer field called total_connections")
 }
 
@@ -146,11 +142,11 @@ func TestOpenldapReverseMetricsIntegration(t *testing.T) {
 		Host:               testutil.GetLocalHost(),
 		Port:               389,
 		SSL:                "",
-		InsecureSkipVerify: true,
 		BindDn:             "cn=manager,cn=config",
 		BindPassword:       "secret",
 		ReverseMetricNames: true,
 	}
+	o.InsecureSkipVerify = true
 
 	var acc testutil.Accumulator
 	err := o.Gather(&acc)
